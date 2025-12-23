@@ -20,9 +20,12 @@ func NewPostgresDB(databaseURL string) (*PostgresDB, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	// Increase pool size for high concurrency (1000+ RPS)
+	// Most requests should hit L1 cache, but we need capacity for cache misses
+	db.SetMaxOpenConns(200)  // Increased for high load
+	db.SetMaxIdleConns(50)   // Increased idle connections for faster reuse
 	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute) // Close idle connections faster
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
@@ -33,6 +36,11 @@ func NewPostgresDB(databaseURL string) (*PostgresDB, error) {
 
 func (p *PostgresDB) Close() error {
 	return p.db.Close()
+}
+
+// Ping checks database connectivity
+func (p *PostgresDB) Ping(ctx context.Context) error {
+	return p.db.PingContext(ctx)
 }
 
 func (p *PostgresDB) CreateLink(ctx context.Context, link *models.Link) error {
@@ -70,6 +78,33 @@ func (p *PostgresDB) GetLinksByUser(ctx context.Context, userID string) ([]*mode
 	rows, err := p.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query links: %w", err)
+	}
+	defer rows.Close()
+
+	var links []*models.Link
+	for rows.Next() {
+		link := &models.Link{}
+		if err := rows.Scan(&link.ID, &link.ShortCode, &link.OriginalURL, &link.UserID, &link.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan link: %w", err)
+		}
+		links = append(links, link)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return links, nil
+}
+
+// GetAllLinks retrieves all links from the database (for cache pre-population)
+func (p *PostgresDB) GetAllLinks(ctx context.Context) ([]*models.Link, error) {
+	query := `SELECT id, short_code, original_url, user_id, created_at 
+	          FROM links ORDER BY created_at DESC`
+	
+	rows, err := p.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query all links: %w", err)
 	}
 	defer rows.Close()
 

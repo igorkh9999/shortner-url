@@ -85,6 +85,9 @@ func CreateLink(pgDB *db.PostgresDB, baseURL string) http.HandlerFunc {
 			}
 		}
 
+		// Immediately add to L1 cache for fast redirects
+		SetL1Cache(link.ShortCode, link.OriginalURL, 24*time.Hour)
+
 		// Use provided baseURL (frontend URL) for short links
 		// The frontend will handle the redirect
 		response := CreateLinkResponse{

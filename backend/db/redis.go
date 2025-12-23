@@ -25,8 +25,17 @@ func NewRedisDB(redisURL string) (*RedisDB, error) {
 		}
 	}
 
-	opt.PoolSize = 10
-	opt.MinIdleConns = 5
+	// Increase pool size for high concurrency (1000+ concurrent requests)
+	// Each redirect request may need: Get (cache) + Set (cache miss) + Incr (counter) = 3 ops
+	// Async operations also need connections, so we need more capacity
+	opt.PoolSize = 200
+	opt.MinIdleConns = 50
+	// Set timeouts to prevent hanging connections
+	// Balance between fast failure and allowing Redis to respond under load
+	opt.DialTimeout = 5 * time.Second
+	opt.ReadTimeout = 200 * time.Millisecond  // Allow time for Redis to respond
+	opt.WriteTimeout = 200 * time.Millisecond // Same for writes
+	opt.PoolTimeout = 50 * time.Millisecond   // Fast fail if pool exhausted
 
 	client := redis.NewClient(opt)
 
@@ -68,9 +77,16 @@ func (r *RedisDB) Incr(ctx context.Context, key string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to increment key: %w", err)
 	}
-	// Set TTL if this is the first increment
+	// Set TTL if this is the first increment (fire-and-forget to avoid blocking)
 	if val == 1 {
-		r.client.Expire(ctx, key, 60*time.Second)
+		go func() {
+			// Use background context to avoid cancellation
+			bgCtx := context.Background()
+			if err := r.client.Expire(bgCtx, key, 60*time.Second).Err(); err != nil {
+				// Log error but don't block the request
+				// This is non-critical - the key will expire eventually or be cleaned up
+			}
+		}()
 	}
 	return val, nil
 }
@@ -92,5 +108,10 @@ func (r *RedisDB) GetInt(ctx context.Context, key string) (int64, error) {
 		return 0, fmt.Errorf("failed to get int: %w", err)
 	}
 	return val, nil
+}
+
+// Ping checks Redis connectivity
+func (r *RedisDB) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
 }
 

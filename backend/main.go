@@ -11,12 +11,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 )
 
 func main() {
+	// Optimize runtime for high concurrency
+	// Use all available CPUs for maximum throughput
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
@@ -40,6 +45,9 @@ func main() {
 
 	// Initialize SSE broker
 	broker := handlers.NewSSEBroker()
+
+	// Pre-populate L1 cache with all links for maximum performance
+	handlers.PrePopulateL1Cache(pgDB)
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -80,6 +88,9 @@ func main() {
 		middleware.Logger,
 	)
 
+	// Health and metrics endpoints (no middleware for performance)
+	// Register these directly on mux before the catch-all handler
+
 	// Create a custom API router that manually handles routing
 	// This gives us full control over path matching and CORS
 	apiRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,30 +130,40 @@ func main() {
 	// Redirect endpoint (no middleware for performance)
 	// Register AFTER API routes as catch-all for short codes
 	redirectHandler := handlers.HandleRedirect(pgDB, redisDB)
-	
-	// Register redirect handler - catch-all for GET requests that aren't /api/ routes
-	// This handles paths like /cXbEg1
-	// Note: /api/ routes are handled first, so this only catches short codes
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+
+	// Optimized routing: Check path prefix first to avoid mux.Handler overhead for redirects
+	// This is critical for performance - most requests are redirects
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		
-		// Skip API routes and root path
-		if strings.HasPrefix(path, "/api") || path == "/" {
-			http.NotFound(w, r)
-			return
+		// Track request count for metrics (skip for health endpoints)
+		if path != "/health" && path != "/ready" && path != "/metrics" {
+			handlers.IncrementRequestCount()
 		}
 		
-		// Handle redirect for short codes
-		redirectHandler(w, r)
+		// Fast path: Most requests are redirects (not /api/ routes)
+		// Check prefix first to avoid expensive mux.Handler call
+		if !strings.HasPrefix(path, "/api") && path != "/health" && path != "/ready" && path != "/metrics" {
+			// This is likely a redirect request
+			if r.Method == http.MethodGet && path != "/" && len(path) > 1 {
+				redirectHandler(w, r)
+				return
+			}
+		}
+		
+		// API routes and health endpoints: Let mux handle it
+		mux.ServeHTTP(w, r)
 	})
 
-	// Create server
+	// Create server with optimized settings for high performance
 	server := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           ":" + cfg.Port,
+		Handler:        handler,
+		ReadTimeout:    5 * time.Second,   // Reduced for faster connection recycling
+		WriteTimeout:   5 * time.Second,   // Reduced for faster response
+		IdleTimeout:    120 * time.Second, // Increased for connection reuse
+		MaxHeaderBytes: 1 << 20,          // 1MB max header size
+		// Note: No ReadHeaderTimeout needed for redirects (simple requests)
 	}
 
 	// Start server in goroutine

@@ -18,8 +18,10 @@ type logEntry struct {
 // Logger middleware logs HTTP requests
 func Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip logging for redirect endpoint (performance)
-		if r.URL.Path != "/" && len(r.URL.Path) <= 10 && r.Method == http.MethodGet {
+		// Skip logging for redirect endpoint and health checks (performance)
+		path := r.URL.Path
+		if (path != "/" && len(path) <= 10 && r.Method == http.MethodGet) ||
+			path == "/health" || path == "/ready" || path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
