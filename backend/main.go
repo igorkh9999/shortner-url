@@ -88,6 +88,9 @@ func main() {
 		middleware.Logger,
 	)
 
+	// Health and metrics endpoints (no middleware for performance)
+	// Register these directly on mux before the catch-all handler
+
 	// Create a custom API router that manually handles routing
 	// This gives us full control over path matching and CORS
 	apiRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,9 +136,14 @@ func main() {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		
+		// Track request count for metrics (skip for health endpoints)
+		if path != "/health" && path != "/ready" && path != "/metrics" {
+			handlers.IncrementRequestCount()
+		}
+		
 		// Fast path: Most requests are redirects (not /api/ routes)
 		// Check prefix first to avoid expensive mux.Handler call
-		if !strings.HasPrefix(path, "/api") {
+		if !strings.HasPrefix(path, "/api") && path != "/health" && path != "/ready" && path != "/metrics" {
 			// This is likely a redirect request
 			if r.Method == http.MethodGet && path != "/" && len(path) > 1 {
 				redirectHandler(w, r)
@@ -143,7 +151,7 @@ func main() {
 			}
 		}
 		
-		// API routes: Let mux handle it
+		// API routes and health endpoints: Let mux handle it
 		mux.ServeHTTP(w, r)
 	})
 

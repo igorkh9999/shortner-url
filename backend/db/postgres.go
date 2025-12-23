@@ -38,6 +38,11 @@ func (p *PostgresDB) Close() error {
 	return p.db.Close()
 }
 
+// Ping checks database connectivity
+func (p *PostgresDB) Ping(ctx context.Context) error {
+	return p.db.PingContext(ctx)
+}
+
 func (p *PostgresDB) CreateLink(ctx context.Context, link *models.Link) error {
 	query := `INSERT INTO links (short_code, original_url, user_id, created_at) 
 	          VALUES ($1, $2, $3, $4) RETURNING id, created_at`

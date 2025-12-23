@@ -106,6 +106,7 @@ func HandleRedirect(pgDB *db.PostgresDB, redisDB *db.RedisDB) http.HandlerFunc {
 					return
 				}
 				log.Printf("Error getting link: %v", err)
+				IncrementErrorCount() // Track errors for metrics
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}

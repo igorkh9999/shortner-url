@@ -110,3 +110,8 @@ func (r *RedisDB) GetInt(ctx context.Context, key string) (int64, error) {
 	return val, nil
 }
 
+// Ping checks Redis connectivity
+func (r *RedisDB) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
+}
+

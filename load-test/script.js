@@ -1,30 +1,44 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Rate } from 'k6/metrics';
+import { Rate, Trend } from 'k6/metrics';
 
+// Custom metrics
 const errorRate = new Rate('errors');
+const redirectLatency = new Trend('redirect_latency');
 
 export const options = {
     stages: [
-        { duration: '30s', target: 100 }, // Ramp to 100 RPS
-        { duration: '30s', target: 500 }, // Ramp to 500 RPS
-        { duration: '30s', target: 1000 }, // Ramp to 1000 RPS
-        { duration: '30s', target: 1000 }, // Hold at 1000 RPS
+        { duration: '30s', target: 100 }, // Warm-up: Ramp to 100 RPS
+        { duration: '1m', target: 500 }, // Ramp up: 500 RPS
+        { duration: '1m', target: 1000 }, // Peak load: 1000 RPS
+        { duration: '30s', target: 500 }, // Ramp down: 500 RPS
+        { duration: '30s', target: 0 }, // Cool down
     ],
     thresholds: {
-        http_req_duration: ['p(95)<100', 'p(99)<200'], // 95% < 100ms, 99% < 200ms
-        http_req_failed: ['rate<0.01'], // Error rate < 1%
-        errors: ['rate<0.01'],
+        errors: ['rate<0.01'], // <1% error rate
+        http_req_duration: ['p(95)<100', 'p(99)<200'], // Latency targets
+        http_req_failed: ['rate<0.01'], // <1% failed requests
+        redirect_latency: ['p(95)<50'], // <50ms redirect time
     },
+    noConnectionReuse: false, // Reuse connections for better performance
+    userAgent: 'k6/load-test',
 };
 
-// Setup phase: create test links
+// Setup phase: create test links and warm cache
 export function setup() {
     const links = [];
     const baseURL = __ENV.BASE_URL || 'http://localhost:8080';
 
+    // Health check first
+    console.log('Checking server health...');
+    const healthRes = http.get(`${baseURL}/health`);
+    check(healthRes, {
+        'health check passed': (r) => r.status === 200,
+    });
+
     console.log('Creating test links...');
 
+    // Create 100 test links
     for (let i = 0; i < 100; i++) {
         const payload = JSON.stringify({
             url: `https://example.com/page${i}`,
@@ -61,7 +75,7 @@ export function setup() {
         }
     }
     // Give server a moment to process all warm-up requests and populate L1 cache
-    sleep(1);
+    sleep(2);
     console.log('Cache pre-warmed');
 
     return { links, baseURL };
@@ -77,22 +91,40 @@ export default function (data) {
     const shortCode = data.links[Math.floor(Math.random() * data.links.length)];
     const url = `${data.baseURL}/${shortCode}`;
 
-    // Test redirect endpoint
+    // Test redirect endpoint with timing
+    const startTime = Date.now();
     const res = http.get(url, {
         redirects: 0, // Don't follow redirects
+        timeout: '5s',
         tags: { name: 'Redirect' },
     });
+    const duration = Date.now() - startTime;
 
+    // Record redirect latency
+    redirectLatency.add(duration);
+
+    // Checks
     const success = check(res, {
         'status is 302': (r) => r.status === 302,
-        'redirect latency < 50ms': (r) => r.timings.duration < 50,
+        'has location header': (r) => r.headers['Location'] !== undefined,
+        'redirect latency < 50ms': (r) => duration < 50,
     });
 
+    errorRate.add(!success);
+
+    // Log failures
     if (!success) {
-        errorRate.add(1);
-    } else {
-        errorRate.add(0);
+        console.error(`Failed: ${shortCode}, Status=${res.status}, Duration=${duration}ms`);
     }
 
     sleep(0.1); // Small delay between requests
+}
+
+export function teardown(data) {
+    console.log('Test completed');
+    // Optionally check metrics endpoint
+    const metricsRes = http.get(`${data.baseURL}/metrics`);
+    if (metricsRes.status === 200) {
+        console.log('Final metrics:', metricsRes.body);
+    }
 }

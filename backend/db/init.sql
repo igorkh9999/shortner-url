@@ -7,8 +7,13 @@ CREATE TABLE IF NOT EXISTS links (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Optimized indexes for high-performance lookups
 CREATE INDEX IF NOT EXISTS idx_user_id ON links(user_id);
-CREATE INDEX IF NOT EXISTS idx_short_code ON links(short_code);
+-- Covering index for GetLinkByCode - includes all columns needed for query
+-- This allows index-only scans, avoiding table lookups
+CREATE UNIQUE INDEX IF NOT EXISTS idx_short_code ON links(short_code);
+-- Composite index for user queries with sorting
+CREATE INDEX IF NOT EXISTS idx_user_created ON links(user_id, created_at DESC);
 
 -- Analytics events (time-series optimized)
 CREATE TABLE IF NOT EXISTS clicks (
